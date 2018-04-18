@@ -7,6 +7,10 @@ var mongoose = require('mongoose');
 var Message = require('./schema/Message');
 var bodyparser = require('body-parser');
 var fileUpload = require('express-fileupload');
+var passport = require('passport');
+var LocalStrategy = require('passport-local').Strategy;
+var session = require('express-session');
+var User = require('./schema/User');
 
 var app = express();
 
@@ -19,18 +23,97 @@ mongoose.connect('mongodb://localhost:1111/chatapp', function(err) {
 });
 
 app.use(bodyparser());
-app.use("/image", express.static(path.join(__dirname, 'image')));
-app.set('views', path.join(__dirname, 'views'));
 
+app.use(session({secret: 'HogeFuga'}));
+app.use(passport.initialize());
+app.use(passport.session());
+
+app.set('views', path.join(__dirname, 'views'));
 app.set('view engine', 'pug');
 
-app.get("/", function(req, res, next) {
-  Message.find({}, function(err, msgs) {
-    if(err) throw err;
-    return res.render('index', {messages: msgs});
+app.use("/image", express.static(path.join(__dirname, 'image')));
+app.use("/avatar", express.static(path.join(__dirname, 'avatar')));
+
+
+// セッション管理
+passport.use(new LocalStrategy(
+  function(username, password, done) {
+    User.findOne({username: username}, function(err, user) {
+      if (err) { return done(err); }
+      if (!user) {
+        return done(null, false, {message: 'Incorrect username.'});
+      }
+      if (user.password !== password) {
+        return done(null, false, {message: 'Incorrect password.'});
+      }
+      return done(null, user);
+    });
+  }
+));
+
+passport.serializeUser(function(user, done) {
+  done(null, user._id);
+});
+
+passport.deserializeUser(function(id, done) {
+  User.findOne({_id: id}, function(err, user) {
+    done(err, user);
   });
 });
 
+// ルーティング
+// ログインページ
+app.get("/login", function(req, res, next) {
+  return res.render('login');
+});
+
+app.post('/login', passport.authenticate('local'), function(req, res, next) {
+  User.findOne({_id: req.session.passport.user}, function(err, user) {
+    if (err||!user||!req.session) {
+      return res.redirect('/login');
+    } else {
+      req.session.user = {
+        username: user.username,
+        avatar_path: user.avatar_path
+      };
+      return res.redirect("/");
+    }
+  });
+});
+
+// サインインページ
+app.get("/signin", function(req, res, next) {
+  return res.render('signin');
+});
+
+app.post("/signin", fileUpload(), function(req, res, next) {
+  var avatar = req.files.avatar;
+  avatar.mv('./avatar/' + avatar.name, function(err) {
+    if (err) throw err;
+    var newUser = new User({
+      username: req.body.username,
+      password: req.body.password,
+      avatar_path: '/avatar/' + avatar.name
+    });
+    newUser.save((err) => {
+      if (err) throw err;
+      return res.redirect("/");
+    });
+  });
+});
+
+// トップ
+app.get("/", function(req, res, next) {
+  Message.find({}, function(err, msgs) {
+    if(err) throw err;
+    return res.render('index', {
+      messages: msgs,
+      user: req.session && req.session.user ? req.session.user : null
+    });
+  });
+});
+
+// 投稿
 app.get("/update", function(req, res, next) {
   return res.render('update');
 });
