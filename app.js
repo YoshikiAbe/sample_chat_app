@@ -11,6 +11,15 @@ var passport = require('passport');
 var LocalStrategy = require('passport-local').Strategy;
 var session = require('express-session');
 var User = require('./schema/User');
+var TwitterStrategy = require('passport-twitter').Strategy;
+
+var twitterConfig = {
+  consumerKey: process.env.TWITTER_CONSUMER_KEY,
+  consumerSecret: process.env.TWITTER_CONSUMER_SECRET,
+  callbackURL: process.env.TWITTER_CALLBACK_URL
+};
+
+console.dir(twitterConfig);
 
 var app = express();
 
@@ -36,17 +45,26 @@ app.use("/avatar", express.static(path.join(__dirname, 'avatar')));
 
 
 // セッション管理
-passport.use(new LocalStrategy(
-  function(username, password, done) {
-    User.findOne({username: username}, function(err, user) {
-      if (err) { return done(err); }
-      if (!user) {
-        return done(null, false, {message: 'Incorrect username.'});
+passport.use(new TwitterStrategy(twitterConfig,
+  function(token, tokenSecret, profile, done) {
+    User.findOne({twitter_profile_id: profile.id}, function(err, user) {
+      if (err) {
+        return done(err);
+      } else if (!user) {
+        console.log('fffffffffff');
+        var _user = {
+          username: profile.displayName,
+          twitter_profile_id: profile.id,
+          avatar_path: profile.photos[0].value
+        };
+        var newUser = new User(_user);
+        newUser.save(function(err) {
+          if (err) throw err;
+          return done(null, newUser);
+        });
+      } else {
+        return done(null, user);
       }
-      if (user.password !== password) {
-        return done(null, false, {message: 'Incorrect password.'});
-      }
-      return done(null, user);
     });
   }
 ));
@@ -62,44 +80,19 @@ passport.deserializeUser(function(id, done) {
 });
 
 // ルーティング
-// ログインページ
-app.get("/login", function(req, res, next) {
-  return res.render('login');
-});
+// oauth認証
+app.get('/oauth/twitter', passport.authenticate('twitter'));
 
-app.post('/login', passport.authenticate('local'), function(req, res, next) {
-  User.findOne({_id: req.session.passport.user}, function(err, user) {
-    if (err||!user||!req.session) {
-      return res.redirect('/login');
-    } else {
+app.get('/oauth/twitter/callback', passport.authenticate('twitter'), 
+  function(req, res, next) {
+    User.findOne({_id: req.session.passport.user}, function(err, user) {
+      if (err||!req.session) return res.redirect('/oauth/twitter');
       req.session.user = {
         username: user.username,
         avatar_path: user.avatar_path
       };
       return res.redirect("/");
-    }
-  });
-});
-
-// サインインページ
-app.get("/signin", function(req, res, next) {
-  return res.render('signin');
-});
-
-app.post("/signin", fileUpload(), function(req, res, next) {
-  var avatar = req.files.avatar;
-  avatar.mv('./avatar/' + avatar.name, function(err) {
-    if (err) throw err;
-    var newUser = new User({
-      username: req.body.username,
-      password: req.body.password,
-      avatar_path: '/avatar/' + avatar.name
     });
-    newUser.save((err) => {
-      if (err) throw err;
-      return res.redirect("/");
-    });
-  });
 });
 
 // トップ
@@ -121,21 +114,26 @@ app.get("/update", function(req, res, next) {
 app.post("/update", fileUpload(), function(req, res, next) {
 
   if (req.files && req.files.image) {
-    req.files.image.mv('./image/' + req.files.image.name, function(err) {
+    var img = req.files.image;
+
+    img.mv('./image/' + img.name, function(err) {
       if (err) throw err;
-    });
-    var newMessage = new Message({
-      username: req.body.username,
-      message: req.body.message,
-      image_path: '/image/' + req.files.image.name
-    });
-    newMessage.save((err) => {
-      if(err) throw err;
-      return res.redirect("/");
+
+      var newMessage = new Message({
+        username: req.body.username,
+        avatar_path: req.session.user.avatar_path,
+        message: req.body.message,
+        image_path: '/image/' + img.name
+      });
+      newMessage.save((err) => {
+        if(err) throw err;
+        return res.redirect("/");
+      });
     });
   } else {
     var newMessage = new Message({
       username: req.body.username,
+      avatar_path: req.session.user.avatar_path,
       message: req.body.message
     });
     newMessage.save((err) => {
